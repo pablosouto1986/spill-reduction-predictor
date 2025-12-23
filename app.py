@@ -59,7 +59,6 @@ def load_and_train():
         'remaining_perc_imperv'
     ]
 
-    # Use only existing columns
     actual_features = [f for f in intended_features if f in df_model.columns]
     existing_cols = ['Spill reduction (%)'] + actual_features
     if len(actual_features) < len(intended_features):
@@ -90,8 +89,42 @@ infiltration_area = st.number_input('Total Ground Infiltration Area', value=DEFA
 removed_area = st.number_input('Total Catchment Area Removed', value=DEFAULTS.get('Total catchment area removed (ha)', 0.0), min_value=0.0)
 
 if st.button('Predict'):
-    # Calculate total catchment
-    total_catchment = imperv_area + permeable_area + infiltration
+    # ✅ FIX: Correct variable name
+    total_catchment = imperv_area + permeable_area + infiltration_area
+
+    # Compute percentages
+    perc_imperv = (imperv_area / total_catchment) * 100 if total_catchment > 0 else 0.0
+    perc_infiltration = (infiltration_area / total_catchment) * 100 if total_catchment > 0 else 0.0
+
+    # Build scenario dictionary
+    scenario = {}
+    scenario['% Impermeable total contributing'] = perc_imperv
+    scenario['% Ground Infiltration contributing'] = perc_infiltration
+    scenario['Total Impermeable (Roads,Roofs) (ha)'] = imperv_area
+    scenario['Total Permeable (ha)'] = permeable_area
+    scenario['Total Ground Infiltration (ha)'] = infiltration_area
+    scenario['Total model catchment (ha)'] = total_catchment
+    scenario['Total catchment area removed (ha)'] = removed_area
+    scenario['removed_frac_total'] = removed_area / total_catchment if total_catchment > 0 else 0.0
+    scenario['removed_frac_imperv'] = min(1.0, max(0.0, removed_area / imperv_area if imperv_area > 0 else 0.0))
+    scenario['remaining_perc_imperv'] = perc_imperv * (1 - scenario['removed_frac_imperv'])
+
+    # Ensure correct feature order and fill missing with defaults
+    X_input = np.array([[scenario.get(f, DEFAULTS.get(f, 0.0)) for f in FEATURES]])
+
+    pred = model.predict(X_input)[0]
+
+    # Scale prediction to percentage
+    pred_percent = pred * 100
+
+    # Certainty score (scaled)
+    preds_trees = np.array([tree.predict(X_input) for tree in model.estimators_]).ravel()
+    certainty = max(0.0, 100.0 - preds_trees.std() * 100)
+
+    st.subheader('Prediction Result')
+    st.write(f"**Predicted Spill Reduction:** {pred_percent:.2f} %")
+    st.write(f"**Certainty Score:** {certainty:.2f} / 100")
+
 
 
 
