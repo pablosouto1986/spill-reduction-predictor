@@ -59,7 +59,7 @@ def load_and_train():
         'remaining_perc_imperv'
     ]
 
-    # Use only existing columns to avoid KeyError
+    # Avoid KeyError by filtering existing columns
     existing_cols = [col for col in ['Spill reduction (%)'] + features if col in df_model.columns]
     if len(existing_cols) < len(['Spill reduction (%)'] + features):
         missing = set(['Spill reduction (%)'] + features) - set(existing_cols)
@@ -109,13 +109,16 @@ if st.button('Predict'):
     scenario['removed_frac_imperv'] = min(1.0, max(0.0, removed_area / imperv_area if imperv_area > 0 else 0.0))
     scenario['remaining_perc_imperv'] = perc_imperv * (1 - scenario['removed_frac_imperv'])
 
-    X_input = np.array([[scenario[f] for f in FEATURES if f in scenario]])
+    # FIX: Ensure correct feature order and length
+    X_input = np.array([[scenario.get(f, DEFAULTS.get(f, 0.0)) for f in FEATURES]])
+
     pred = model.predict(X_input)[0]
 
-    # Certainty score = std deviation across trees
+    # Certainty score
     preds_trees = np.array([tree.predict(X_input) for tree in model.estimators_]).ravel()
-    certainty = max(0.0, 100.0 - preds_trees.std())  # Higher std = lower certainty
+    certainty = max(0.0, 100.0 - preds_trees.std())
 
     st.subheader('Prediction Result')
     st.write(f"**Predicted Spill Reduction:** {pred:.2f} %")
     st.write(f"**Certainty Score:** {certainty:.2f} / 100")
+
