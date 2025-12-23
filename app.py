@@ -46,7 +46,7 @@ def load_and_train():
     else:
         df_model['remaining_perc_imperv'] = 0.0
 
-    features = [
+    intended_features = [
         '% Impermeable total contributing',
         '% Ground Infiltration contributing',
         'Total Permeable (ha)',
@@ -59,21 +59,22 @@ def load_and_train():
         'remaining_perc_imperv'
     ]
 
-    # Avoid KeyError by filtering existing columns
-    existing_cols = [col for col in ['Spill reduction (%)'] + features if col in df_model.columns]
-    if len(existing_cols) < len(['Spill reduction (%)'] + features):
-        missing = set(['Spill reduction (%)'] + features) - set(existing_cols)
-        st.warning(f"Missing columns in dataset: {missing}. Model may be less accurate.")
+    # Use only existing columns
+    actual_features = [f for f in intended_features if f in df_model.columns]
+    existing_cols = ['Spill reduction (%)'] + actual_features
+    if len(actual_features) < len(intended_features):
+        missing = set(intended_features) - set(actual_features)
+        st.warning(f"Missing columns in dataset: {missing}. Model will use available features only.")
 
     df_model = df_model.dropna(subset=existing_cols)
-    X = df_model[[col for col in features if col in df_model.columns]].values
+    X = df_model[actual_features].values
     y = df_model['Spill reduction (%)'].values
 
     model = RandomForestRegressor(n_estimators=300, random_state=42)
     model.fit(X, y)
 
-    defaults = {f: float(df_model[f].median()) for f in features if f in df_model.columns}
-    return model, features, defaults
+    defaults = {f: float(df_model[f].median()) for f in actual_features}
+    return model, actual_features, defaults
 
 model, FEATURES, DEFAULTS = load_and_train()
 
@@ -96,8 +97,8 @@ if st.button('Predict'):
     perc_imperv = (imperv_area / total_catchment) * 100 if total_catchment > 0 else 0.0
     perc_infiltration = (infiltration_area / total_catchment) * 100 if total_catchment > 0 else 0.0
 
-    # Build full feature vector
-    scenario = DEFAULTS.copy()
+    # Build scenario dictionary
+    scenario = {}
     scenario['% Impermeable total contributing'] = perc_imperv
     scenario['% Ground Infiltration contributing'] = perc_infiltration
     scenario['Total Impermeable (Roads,Roofs) (ha)'] = imperv_area
@@ -109,7 +110,7 @@ if st.button('Predict'):
     scenario['removed_frac_imperv'] = min(1.0, max(0.0, removed_area / imperv_area if imperv_area > 0 else 0.0))
     scenario['remaining_perc_imperv'] = perc_imperv * (1 - scenario['removed_frac_imperv'])
 
-    # FIX: Ensure correct feature order and length
+    # Ensure correct feature order and fill missing with defaults
     X_input = np.array([[scenario.get(f, DEFAULTS.get(f, 0.0)) for f in FEATURES]])
 
     pred = model.predict(X_input)[0]
@@ -121,4 +122,5 @@ if st.button('Predict'):
     st.subheader('Prediction Result')
     st.write(f"**Predicted Spill Reduction:** {pred:.2f} %")
     st.write(f"**Certainty Score:** {certainty:.2f} / 100")
+
 
