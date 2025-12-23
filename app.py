@@ -27,15 +27,24 @@ def load_and_train():
     df_model = df.copy()
 
     # Feature engineering
-    df_model['removed_frac_total'] = df_model['Total catchment area removed (ha)'] / df_model['Total model catchment (ha)']
+    if 'Total catchment area removed (ha)' in df_model.columns and 'Total model catchment (ha)' in df_model.columns:
+        df_model['removed_frac_total'] = df_model['Total catchment area removed (ha)'] / df_model['Total model catchment (ha)']
+    else:
+        df_model['removed_frac_total'] = 0.0
+
     def compute_removed_frac_imperv(row):
-        imp = row['Total Impermeable (Roads,Roofs) (ha)']
-        rem = row['Total catchment area removed (ha)']
-        if pd.notnull(imp) and imp > 0:
+        imp = row.get('Total Impermeable (Roads,Roofs) (ha)', None)
+        rem = row.get('Total catchment area removed (ha)', None)
+        if pd.notnull(imp) and imp > 0 and pd.notnull(rem):
             return min(1.0, max(0.0, rem / imp))
         return 0.0
+
     df_model['removed_frac_imperv'] = df_model.apply(compute_removed_frac_imperv, axis=1)
-    df_model['remaining_perc_imperv'] = df_model['% Impermeable total contributing'] * (1 - df_model['removed_frac_imperv'])
+
+    if '% Impermeable total contributing' in df_model.columns:
+        df_model['remaining_perc_imperv'] = df_model['% Impermeable total contributing'] * (1 - df_model['removed_frac_imperv'])
+    else:
+        df_model['remaining_perc_imperv'] = 0.0
 
     features = [
         '% Impermeable total contributing',
@@ -50,14 +59,20 @@ def load_and_train():
         'remaining_perc_imperv'
     ]
 
-    df_model = df_model.dropna(subset=['Spill reduction (%)'] + features)
-    X = df_model[features].values
+    # Use only existing columns to avoid KeyError
+    existing_cols = [col for col in ['Spill reduction (%)'] + features if col in df_model.columns]
+    if len(existing_cols) < len(['Spill reduction (%)'] + features):
+        missing = set(['Spill reduction (%)'] + features) - set(existing_cols)
+        st.warning(f"Missing columns in dataset: {missing}. Model may be less accurate.")
+
+    df_model = df_model.dropna(subset=existing_cols)
+    X = df_model[[col for col in features if col in df_model.columns]].values
     y = df_model['Spill reduction (%)'].values
 
     model = RandomForestRegressor(n_estimators=300, random_state=42)
     model.fit(X, y)
 
-    defaults = {f: float(df_model[f].median()) for f in features}
+    defaults = {f: float(df_model[f].median()) for f in features if f in df_model.columns}
     return model, features, defaults
 
 model, FEATURES, DEFAULTS = load_and_train()
@@ -68,10 +83,10 @@ st.write('Estimate spill reduction based on catchment characteristics.')
 
 # Inputs: areas only
 st.header('Input Areas (ha)')
-imperv_area = st.number_input('Total Impermeable Area (Roads, Roofs)', value=DEFAULTS['Total Impermeable (Roads,Roofs) (ha)'], min_value=0.0)
-permeable_area = st.number_input('Total Permeable Area', value=DEFAULTS['Total Permeable (ha)'], min_value=0.0)
-infiltration_area = st.number_input('Total Ground Infiltration Area', value=DEFAULTS['Total Ground Infiltration (ha)'], min_value=0.0)
-removed_area = st.number_input('Total Catchment Area Removed', value=DEFAULTS['Total catchment area removed (ha)'], min_value=0.0)
+imperv_area = st.number_input('Total Impermeable Area (Roads, Roofs)', value=DEFAULTS.get('Total Impermeable (Roads,Roofs) (ha)', 0.0), min_value=0.0)
+permeable_area = st.number_input('Total Permeable Area', value=DEFAULTS.get('Total Permeable (ha)', 0.0), min_value=0.0)
+infiltration_area = st.number_input('Total Ground Infiltration Area', value=DEFAULTS.get('Total Ground Infiltration (ha)', 0.0), min_value=0.0)
+removed_area = st.number_input('Total Catchment Area Removed', value=DEFAULTS.get('Total catchment area removed (ha)', 0.0), min_value=0.0)
 
 if st.button('Predict'):
     # Calculate total catchment
@@ -94,7 +109,7 @@ if st.button('Predict'):
     scenario['removed_frac_imperv'] = min(1.0, max(0.0, removed_area / imperv_area if imperv_area > 0 else 0.0))
     scenario['remaining_perc_imperv'] = perc_imperv * (1 - scenario['removed_frac_imperv'])
 
-    X_input = np.array([[scenario[f] for f in FEATURES]])
+    X_input = np.array([[scenario[f] for f in FEATURES if f in scenario]])
     pred = model.predict(X_input)[0]
 
     # Certainty score = std deviation across trees
@@ -104,5 +119,3 @@ if st.button('Predict'):
     st.subheader('Prediction Result')
     st.write(f"**Predicted Spill Reduction:** {pred:.2f} %")
     st.write(f"**Certainty Score:** {certainty:.2f} / 100")
-
-
