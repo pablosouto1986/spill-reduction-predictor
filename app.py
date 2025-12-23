@@ -6,6 +6,9 @@ from sklearn.ensemble import RandomForestRegressor
 # Load data once
 df = pd.read_excel('SuDS CSO Clen Data base.xlsx')
 
+# Clean column names (optional but recommended)
+df.columns = df.columns.str.strip()
+
 # Convert numeric columns safely
 numeric_cols = [
     '% Impermeable total contributing',
@@ -19,20 +22,32 @@ numeric_cols = [
 for col in numeric_cols:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
+    else:
+        st.warning(f"Column '{col}' not found in dataset. Check your Excel file.")
 
 @st.cache_data
 def load_and_train():
     df_model = df.copy()
+
     # Engineer features
-    df_model['removed_frac_total'] = df_model['Total catchment area removed (ha)'] / df_model['Total model catchment (ha)']
+    if 'Total catchment area removed (ha)' in df_model.columns and 'Total model catchment (ha)' in df_model.columns:
+        df_model['removed_frac_total'] = df_model['Total catchment area removed (ha)'] / df_model['Total model catchment (ha)']
+    else:
+        df_model['removed_frac_total'] = 0.0
+
     def compute_removed_frac_imperv(row):
-        imp = row['Total Impermeable (Roads,Roofs) (ha)']
-        rem = row['Total catchment area removed (ha)']
-        if pd.notnull(imp) and imp > 0:
+        imp = row.get('Total Impermeable (Roads,Roofs) (ha)', None)
+        rem = row.get('Total catchment area removed (ha)', None)
+        if pd.notnull(imp) and imp > 0 and pd.notnull(rem):
             return min(1.0, max(0.0, rem / imp))
         return 0.0
+
     df_model['removed_frac_imperv'] = df_model.apply(compute_removed_frac_imperv, axis=1)
-    df_model['remaining_perc_imperv'] = df_model['% Impermeable total contributing'] * (1 - df_model['removed_frac_imperv'])
+
+    if '% Impermeable total contributing' in df_model.columns:
+        df_model['remaining_perc_imperv'] = df_model['% Impermeable total contributing'] * (1 - df_model['removed_frac_imperv'])
+    else:
+        df_model['remaining_perc_imperv'] = 0.0
 
     features = [
         '% Impermeable total contributing',
@@ -46,14 +61,16 @@ def load_and_train():
         'remaining_perc_imperv'
     ]
 
-    df_model = df_model.dropna(subset=['Spill reduction (%)'] + features)
-    X = df_model[features].values
+    # Drop rows with missing target or features
+    df_model = df_model.dropna(subset=['Spill reduction (%)'] + [f for f in features if f in df_model.columns])
+
+    X = df_model[[f for f in features if f in df_model.columns]].values
     y = df_model['Spill reduction (%)'].values
 
     model = RandomForestRegressor(n_estimators=300, random_state=42)
     model.fit(X, y)
 
-    defaults = {f: float(df_model[f].median()) for f in features}
+    defaults = {f: float(df_model[f].median()) for f in features if f in df_model.columns}
     return model, features, defaults
 
 model, FEATURES, DEFAULTS = load_and_train()
@@ -65,18 +82,28 @@ st.write('Estimate spill reduction based on pre-modelling catchment characterist
 st.header('Scenario A')
 scenario_a = {}
 for f in FEATURES:
-    vals = pd.to_numeric(df[f], errors='coerce').dropna()
-    min_v, max_v = (0.0, 1.0) if vals.empty else (float(vals.min()), float(vals.max()))
-    default = DEFAULTS.get(f, min_v)
+    if f in df.columns:
+        vals = pd.to_numeric(df[f], errors='coerce').dropna()
+        min_v, max_v = (0.0, 1.0) if vals.empty else (float(vals.min()), float(vals.max()))
+        default = DEFAULTS.get(f, min_v)
+    else:
+        st.warning(f"Column '{f}' not found. Using default range.")
+        min_v, max_v = (0.0, 1.0)
+        default = DEFAULTS.get(f, 0.0)
     scenario_a[f] = st.number_input(f + ' (A)', value=default, min_value=min_v, max_value=max_v)
 
 # Scenario B
 st.header('Scenario B')
 scenario_b = {}
 for f in FEATURES:
-    vals = pd.to_numeric(df[f], errors='coerce').dropna()
-    min_v, max_v = (0.0, 1.0) if vals.empty else (float(vals.min()), float(vals.max()))
-    default = DEFAULTS.get(f, min_v)
+    if f in df.columns:
+        vals = pd.to_numeric(df[f], errors='coerce').dropna()
+        min_v, max_v = (0.0, 1.0) if vals.empty else (float(vals.min()), float(vals.max()))
+        default = DEFAULTS.get(f, min_v)
+    else:
+        st.warning(f"Column '{f}' not found. Using default range.")
+        min_v, max_v = (0.0, 1.0)
+        default = DEFAULTS.get(f, 0.0)
     scenario_b[f] = st.number_input(f + ' (B)', value=default, min_value=min_v, max_value=max_v)
 
 if st.button('Predict'):
@@ -97,3 +124,4 @@ st.subheader('Feature Importance')
 feat_imp = model.feature_importances_
 imp_df = pd.DataFrame({'feature': FEATURES, 'importance': feat_imp}).sort_values('importance', ascending=False).set_index('feature')
 st.bar_chart(imp_df)
+
